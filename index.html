@@ -1,0 +1,1161 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Ônibus Assassino</title>
+<!--
+  ÔNIBUS ASSASSINO
+  © Motion Games, todos os direitos reservados.
+  (O nome do estúdio ainda não foi escolhido. Quando escolher, troque aqui e na tela de título.)
+-->
+<style>
+  /* A tela do jogo ocupa a janela inteira */
+  html, body {
+    margin: 0; height: 100%; background: #1b1b1b; overflow: hidden;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+
+  /* Botões da tela: SÓ aparecem no celular (a classe "mostrar" é colocada pelo JavaScript) */
+  #botoes { display: none; }
+  #botoes.mostrar { display: block; }
+  .bt {
+    position: fixed; border: 3px solid rgba(255,255,255,.55); background: rgba(0,0,0,.35);
+    color: #fff; font: bold 13px sans-serif; border-radius: 18px; padding: 0;
+    touch-action: none; -webkit-tap-highlight-color: transparent;
+  }
+  .bt:active { background: rgba(255,255,255,.35); }
+  .grande { width: 84px; height: 84px; bottom: 22px; }
+  .pequeno { width: 46px; height: 46px; top: 10px; font-size: 20px; }
+  #btnEstatua   { left: 14px; }
+  #btnCorrer    { left: 112px; }
+  #btnIsca      { right: 14px; }
+  #btnPausa     { right: 10px; }
+  #btnRecomecar { right: 64px; }
+  #btnTela      { right: 118px; }
+</style>
+</head>
+<body>
+
+<canvas id="tela"></canvas>
+
+<!-- Botões do celular -->
+<div id="botoes">
+  <button class="bt grande"  id="btnEstatua">🗿<br>ESTÁTUA</button>
+  <button class="bt grande"  id="btnCorrer">🏃<br>CORRER</button>
+  <button class="bt grande"  id="btnIsca">🎈<br>ISCA</button>
+  <button class="bt pequeno" id="btnPausa">⏸</button>
+  <button class="bt pequeno" id="btnRecomecar">↻</button>
+  <button class="bt pequeno" id="btnTela">⛶</button>
+</div>
+
+<script>
+"use strict";
+
+/* ==========================================================================
+   1) CONFIGURAÇÕES  (mexa aqui para mudar o jogo, sem bagunçar o resto)
+   ========================================================================== */
+const CONFIG = {
+  VERSAO: "2.6",        // número da versão do jogo (mostrado na tela de título; troque a cada mudança)
+
+  // QUEM É A AMEAÇA?
+  //   1 = o próprio ônibus tem vida própria e uma arma
+  //   2 = uma pessoa dentro do ônibus tem uma arma
+  AMEACA: 1,
+
+  // QUAL É O OBJETIVO?
+  //   1 = pegar itens (estrelinhas)
+  //   2 = chegar na saída
+  //   3 = pegar os itens E DEPOIS chegar na saída (a saída só abre quando pegar tudo)
+  OBJETIVO: 3,
+
+  ITENS_META: 6,        // quantos itens pegar para vencer (objetivo 1)
+  DANO: 34,             // vida que cada batida ou tiro tira (a vida total é 100, então aguenta 3)
+  MOEDAS_QTD: 4,        // quantas moedas aparecem em cada fase
+  ESCURIDAO: true,      // true = o jogo fica escuro e você só enxerga em volta de você (false desliga)
+  MOEDAS_LOJA: 3,       // quantas moedas custa a bebida do menu de pausa (ela cura sua vida)
+  STOP_MOTION_FPS: 8,   // "quadros por segundo" do tremidinho de stop motion (menor = mais tremido)
+  TREMOR: 2.2,          // quantos pixels as coisas tremem
+
+  // ESPAÇOS PARA SUAS FOTOS DE STOP MOTION
+  // Coloque o caminho da imagem entre aspas. Exemplo: jogador: "fotos/jogador.png"
+  // Se deixar vazio (""), o jogo desenha uma figura simples no lugar.
+  // Tamanhos sugeridos (em pixels): logo 420x160 | chao 960x540 | jogador 40x40
+  //   onibus 100x44 (de cima, com a FRENTE virada para a DIREITA) | pessoa 20x20
+  //   item 24x24 | isca 24x24 | esconderijo 80x64 | saida 56x56
+  IMAGENS: {
+    logo: "",
+    chao: "",
+    jogador: "",
+    onibus: "",
+    pessoa: "",
+    item: "",
+    isca: "",
+    esconderijo: "",
+    saida: ""
+  }
+};
+
+/* ==========================================================================
+   2) PREPARAÇÃO: tela, tamanho do mundo, imagens
+   ========================================================================== */
+const canvas = document.getElementById("tela");
+const ctx = canvas.getContext("2d");
+
+// O jogo é desenhado num "mundo" de 960 x 540 e depois esticado para caber na janela.
+const W = 960, H = 540;
+let escala = 1, offX = 0, offY = 0;   // calculados a cada quadro
+
+// Carrega as imagens que você colocou na CONFIG (as vazias são ignoradas)
+const imagens = {};
+for (const nome in CONFIG.IMAGENS) {
+  const caminho = CONFIG.IMAGENS[nome];
+  if (caminho) {
+    const im = new Image();
+    im.onload = () => { imagens[nome] = im; };   // só usa depois de carregar
+    im.src = caminho;
+  }
+}
+
+/* ==========================================================================
+   3) VARIÁVEIS DO JOGO
+   ========================================================================== */
+let estado = "titulo";   // "titulo", "jogando", "pausa" ou "fim"
+let modo = "fuga";       // "fuga" ou "estatua"
+let tempo = 0;           // segundos sobrevivendo
+let itensPegos = 0;
+let motivoFim = "";
+let venceu = false;
+let novoRecorde = false;
+
+let jog, onibus, itens, tiros, isca, iscaEspera, esconderijos, saida;
+// Coisas que vieram do jogo antigo: vida, moedas e fases
+let vida = 100, invenc = 0, efeitoCura = 0;   // invenc = segundos de proteção depois de levar dano
+let moedas = [], moedasPegas = 0, loja = null;
+let fase = Math.max(1, lerNumero("onibus_fase") || 1);   // a fase fica salva no navegador
+
+// Recordes guardados no navegador (ficam salvos mesmo fechando o jogo)
+const recordes = {
+  fuga:    { sobrev: lerNumero("onibus_rec_fuga"),    vit: lerNumero("onibus_vit_fuga") },
+  estatua: { sobrev: lerNumero("onibus_rec_estatua"), vit: lerNumero("onibus_vit_estatua") }
+};
+function lerNumero(chave) {
+  try { const v = localStorage.getItem(chave); return v ? parseFloat(v) : 0; }
+  catch (e) { return 0; }
+}
+function guardarNumero(chave, valor) {
+  try { localStorage.setItem(chave, String(valor)); } catch (e) {}
+}
+
+/* ==========================================================================
+   4) EFEITO DE STOP MOTION
+   A cada "quadro de stop motion" tudo ganha um tremidinho novo, como se as
+   peças fossem mexidas à mão entre uma foto e outra.
+   ========================================================================== */
+let frameStop = 0, acumStop = 0;
+
+// Devolve um número "aleatório" entre -1 e 1 que só muda quando o quadro de stop motion muda
+function ruido(id) {
+  const s = Math.sin((frameStop + 1) * 12.9898 + id * 78.233) * 43758.5453;
+  return (s - Math.floor(s)) * 2 - 1;
+}
+
+// Desenha algo na posição (x,y) com um tremidinho. "fazer" desenha em volta do ponto (0,0).
+function comTremor(x, y, ang, id, fazer) {
+  ctx.save();
+  ctx.translate(x + ruido(id) * CONFIG.TREMOR, y + ruido(id + 100) * CONFIG.TREMOR);
+  ctx.rotate(ang + ruido(id + 200) * 0.04);
+  fazer();
+  ctx.restore();
+}
+
+/* ==========================================================================
+   5) AJUDANTES DE DESENHO
+   ========================================================================== */
+// Retângulo com cantos redondos
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r); else ctx.rect(x, y, w, h);
+}
+
+// Texto com contorno (fica fácil de ler)
+function texto(t, x, y, tam, cor, alinhamento) {
+  ctx.font = "bold " + tam + 'px "Trebuchet MS", sans-serif';
+  ctx.textAlign = alinhamento || "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(3, tam / 6);
+  ctx.strokeStyle = "#3a2a14";
+  ctx.strokeText(t, x, y);
+  ctx.fillStyle = cor || "#fff";
+  ctx.fillText(t, x, y);
+}
+
+// Se existir foto com esse nome, desenha ela (centralizada) e devolve true
+function desenharImagem(nome, w, h) {
+  const im = imagens[nome];
+  if (!im) return false;
+  ctx.drawImage(im, -w / 2, -h / 2, w, h);
+  return true;
+}
+
+// Sons simples feitos pelo próprio navegador (sem arquivos)
+let audioCtx = null;
+let mudo = false;   // true = jogo sem som
+function alternarSom() {
+  mudo = !mudo;
+  if (mudo && motorGanho) motorGanho.gain.value = 0;
+}
+function bip(freq, dur) {
+  if (mudo) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = "square"; o.frequency.value = freq; g.gain.value = 0.05;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+
+// Som do motor do ônibus: fica ligado o tempo todo, mais alto quando ele está perto
+// e mais agudo quando ele está te perseguindo
+let motor = null, motorGanho = null;
+function ligarMotor() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume();
+    if (motor) return;
+    motor = audioCtx.createOscillator();
+    motorGanho = audioCtx.createGain();
+    motor.type = "sawtooth"; motor.frequency.value = 55; motorGanho.gain.value = 0;
+    motor.connect(motorGanho); motorGanho.connect(audioCtx.destination);
+    motor.start();
+  } catch (e) {}
+}
+function atualizarMotor() {
+  if (!motor) return;
+  if (estado !== "jogando" || mudo) { motorGanho.gain.value = 0; return; }   // pausa, menu e fim: silêncio
+  const dist = Math.hypot(jog.x - onibus.x, jog.y - onibus.y);
+  motorGanho.gain.value = Math.max(0.01, 0.12 * (1 - Math.min(dist, 400) / 400));
+  motor.frequency.value = (onibus.estado === "perseguindo") ? 95 : 55;
+}
+
+/* ==========================================================================
+   6) COMEÇAR UM JOGO NOVO
+   ========================================================================== */
+function iniciarJogo(m) {
+  modo = m;
+  estado = "jogando";
+  tempo = 0; itensPegos = 0; venceu = false; novoRecorde = false;
+  tiros = []; isca = null; iscaEspera = 0;
+  vida = 100; invenc = 0; efeitoCura = 0; moedasPegas = 0;
+  ligarMotor();
+  ponteiro.ativo = false;
+  document.getElementById("btnIsca").style.display = (modo === "estatua") ? "none" : "";
+
+  // No modo Estátua, o jogador começa na calçada de baixo; no Fuga, começa na rua.
+  jog = { x: 120, y: (modo === "estatua" ? 505 : 430), ang: 0, estamina: 1, cansado: false, energia: 1, estatuaTravada: false,
+          parado: false, escondido: false, seMexeu: false };
+
+  // O ônibus começa em cima, à direita
+  onibus = {
+    x: 820, y: 120, ang: Math.PI,
+    estado: (modo === "fuga") ? "passeando" : "andando",
+    alvo: novoAlvo(), pausa: 0, memoria: 0, tempoTiro: 2,
+    fase: 5, graca: 0, larg: 86, alt: 34
+  };
+
+  // No Estátua não há caixas: a regra é simplesmente congelar quando ele olha.
+  esconderijos = (modo === "estatua") ? [] : [
+    { x: 300, y: 140, w: 80, h: 64 },
+    { x: 560, y: 400, w: 90, h: 64 },
+    { x: 700, y: 240, w: 70, h: 70 },
+    { x: 170, y: 260, w: 64, h: 80 }
+  ];
+
+  // A bebida é comprada pelo menu de pausa; não há loja ocupando o mapa.
+  loja = null;
+  itens = []; saida = null;
+  if (modo !== "estatua" && CONFIG.OBJETIVO !== 1) { // no Fuga: tem saída
+    saida = { x: 900, y: 270, w: 56, h: 56 };
+  }
+  if (modo !== "estatua" && CONFIG.OBJETIVO !== 2) { // no Fuga: tem itens para pegar
+    for (let i = 0; i < CONFIG.ITENS_META; i++) {
+      itens.push(modo === "estatua" ? posicaoLivreNaCalcada() : posicaoLivre());
+    }
+  }
+
+  // No Estátua não há moedas nem compra: é um desafio puro de sobrevivência.
+  moedas = [];
+  if (modo !== "estatua") {
+    for (let i = 0; i < CONFIG.MOEDAS_QTD; i++) moedas.push(posicaoLivre());
+  }
+}
+
+// A rua (asfalto) vai de y=80 até y=460. No modo Estátua, uma ponte passa
+// por cima dela e liga as duas calçadas sem o jogador pisar no asfalto.
+const RUA_TOPO = 80, RUA_BASE = 460;
+const PONTE_X = W / 2, PONTE_LARGURA = 72;
+function alvoNaRua(x, y, margem) {
+  return {
+    x: Math.max(50, Math.min(W - 50, x)),
+    y: Math.max(RUA_TOPO + margem, Math.min(RUA_BASE - margem, y))
+  };
+}
+
+// Escolhe um lugar sorteado para o ônibus passear, sempre no asfalto
+function novoAlvo() {
+  const margem = 17; // metade da altura do ônibus
+  return { x: 60 + Math.random() * (W - 120), y: RUA_TOPO + margem + Math.random() * (RUA_BASE - RUA_TOPO - margem * 2) };
+}
+
+// Escolhe um lugar livre (fora das caixas e longe de onde o jogador começa)
+function posicaoLivre() {
+  for (let tentativa = 0; tentativa < 100; tentativa++) {
+    const p = { x: 40 + Math.random() * (W - 80), y: 70 + Math.random() * (H - 110) };
+    const dentroDeCaixa = esconderijos.some(e =>
+      Math.abs(p.x - e.x) < e.w / 2 + 20 && Math.abs(p.y - e.y) < e.h / 2 + 20);
+    const pertoDoInicio = Math.hypot(p.x - 120, p.y - 430) < 120;
+    if (!dentroDeCaixa && !pertoDoInicio) return p;
+  }
+  return { x: W / 2, y: H / 2 };
+}
+
+// Lugar para itens no modo Estátua: nas duas calçadas e sem empilhar
+// em cima da saída ou de outro item/moeda.
+function posicaoLivreNaCalcada() {
+  for (let tentativa = 0; tentativa < 100; tentativa++) {
+    const p = {
+      x: 45 + Math.random() * (W - 90),
+      y: Math.random() < 0.5 ? 22 + Math.random() * 38 : 480 + Math.random() * 38
+    };
+    const ocupado = [...itens, ...moedas, saida].filter(Boolean).some(o =>
+      Math.hypot(p.x - o.x, p.y - o.y) < 70);
+    if (!ocupado && Math.hypot(p.x - jog.x, p.y - jog.y) > 80) return p;
+  }
+  return { x: W / 2, y: 505 };
+}
+
+/* ==========================================================================
+   7) CONTROLES (teclado, mouse, toque e botões do celular)
+   ========================================================================== */
+const teclas = {};                                   // teclas que estão apertadas agora
+const botoes = { estatua: false, correr: false };    // botões de segurar do celular
+let ponteiro = { ativo: false, id: -1, tipo: "mouse", x: 0, y: 0, ox: 0, oy: 0 };
+let botoesTela = [];                                 // botões desenhados dentro do jogo (título, pausa...)
+let celularAtivo = false;
+
+window.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if ([" ", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) e.preventDefault();
+  const jaEstavaApertada = teclas[k];
+  teclas[k] = true;
+  if (jaEstavaApertada) return;
+
+  if (estado === "titulo") {
+    if (k === "1") iniciarJogo("fuga");
+    if (k === "2") iniciarJogo("estatua");
+    if (k === "t" || k === "h") estado = "tutorial";           // T = como jogar
+  } else if (estado === "tutorial") {
+    if (k === "escape" || k === "enter" || k === "m") irParaMenu();
+  } else {
+    if (k === "escape") alternarPausa();
+    if (k === "r") recomecar();
+    if (k === "e" || k === "q") soltarIsca();
+    if (k === "m") irParaMenu();
+    if (k === "enter" && estado === "fim") recomecar();
+  }
+  if (k === "f") alternarTelaCheia();
+  if (k === "n") alternarSom();                                // N = liga/desliga o som
+});
+window.addEventListener("keyup", e => { teclas[e.key.toLowerCase()] = false; });
+
+// Se a janela perder o foco, alguns navegadores não entregam o "keyup" ou
+// "pointerup". Limpar os controles evita o jogador ficar andando, correndo ou
+// travado como estátua quando a pessoa volta ao jogo.
+function limparControles() {
+  for (const tecla in teclas) teclas[tecla] = false;
+  botoes.estatua = false;
+  botoes.correr = false;
+  ponteiro.ativo = false;
+}
+window.addEventListener("blur", limparControles);
+
+// Mouse e dedo na tela do jogo
+canvas.addEventListener("pointerdown", e => {
+  const p = paraMundo(e);
+  // 1) Clicou num botão desenhado no jogo?
+  for (const b of botoesTela) {
+    if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) { b.acao(); return; }
+  }
+  // 2) Senão, é para andar
+  if (estado === "jogando") {
+    ponteiro = { ativo: true, id: e.pointerId, tipo: e.pointerType, x: p.x, y: p.y, ox: p.x, oy: p.y };
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+});
+canvas.addEventListener("pointermove", e => {
+  if (ponteiro.ativo && e.pointerId === ponteiro.id) {
+    const p = paraMundo(e); ponteiro.x = p.x; ponteiro.y = p.y;
+  }
+});
+function soltarPonteiro(e) { if (e.pointerId === ponteiro.id) ponteiro.ativo = false; }
+canvas.addEventListener("pointerup", soltarPonteiro);
+canvas.addEventListener("pointercancel", soltarPonteiro);
+
+// Converte o ponto da janela para o ponto dentro do mundo do jogo
+function paraMundo(e) { return { x: (e.clientX - offX) / escala, y: (e.clientY - offY) / escala }; }
+
+// Botões HTML do celular
+function botaoSegurar(id, nome) {
+  const el = document.getElementById(id);
+  el.addEventListener("pointerdown", e => { e.preventDefault(); botoes[nome] = true; });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(t =>
+    el.addEventListener(t, () => { botoes[nome] = false; }));
+}
+function botaoClicar(id, acao) {
+  document.getElementById(id).addEventListener("pointerdown", e => { e.preventDefault(); acao(); });
+}
+botaoSegurar("btnEstatua", "estatua");
+botaoSegurar("btnCorrer", "correr");
+botaoClicar("btnIsca", soltarIsca);
+botaoClicar("btnPausa", alternarPausa);
+botaoClicar("btnRecomecar", recomecar);
+botaoClicar("btnTela", alternarTelaCheia);
+
+// Mostra os botões só se for celular (ou na primeira vez que alguém tocar na tela)
+function mostrarBotoesDoCelular() {
+  celularAtivo = true;
+  document.getElementById("botoes").classList.add("mostrar");
+}
+if (window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window) mostrarBotoesDoCelular();
+window.addEventListener("touchstart", mostrarBotoesDoCelular, { once: true });
+
+function alternarPausa() {
+  if (estado === "jogando") estado = "pausa";
+  else if (estado === "pausa") estado = "jogando";
+}
+function recomecar() { if (estado !== "titulo" && estado !== "tutorial") iniciarJogo(modo); }
+function irParaMenu() { estado = "titulo"; ponteiro.ativo = false; }
+function alternarTelaCheia() {
+  try {
+    const el = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    }
+  } catch (e) {}
+}
+// Se a pessoa trocar de aba, o jogo pausa sozinho
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  limparControles();
+  if (estado === "jogando") estado = "pausa";
+});
+
+/* ==========================================================================
+   8) MOVER O JOGADOR
+   ========================================================================== */
+// Descobre para onde o jogador quer ir (teclado, mouse ou dedo)
+function lerDirecao() {
+  let dx = 0, dy = 0;
+  if (teclas["arrowleft"]  || teclas["a"]) dx -= 1;
+  if (teclas["arrowright"] || teclas["d"]) dx += 1;
+  if (teclas["arrowup"]    || teclas["w"]) dy -= 1;
+  if (teclas["arrowdown"]  || teclas["s"]) dy += 1;
+
+  if (ponteiro.ativo) {
+    if (ponteiro.tipo === "mouse") {          // mouse: anda até onde o mouse está
+      dx = ponteiro.x - jog.x; dy = ponteiro.y - jog.y;
+      if (Math.hypot(dx, dy) < 8) { dx = 0; dy = 0; }
+    } else {                                  // dedo: funciona como um direcional
+      dx = ponteiro.x - ponteiro.ox; dy = ponteiro.y - ponteiro.oy;
+      if (Math.hypot(dx, dy) < 10) { dx = 0; dy = 0; }
+    }
+  }
+  const m = Math.hypot(dx, dy);
+  if (m > 0) { dx /= m; dy /= m; }
+  return { dx, dy };
+}
+
+function moverJogador(dt) {
+  const { dx, dy } = lerDirecao();
+
+  // Modo estátua do jogador: segurando ESPAÇO (ou o botão), ele não anda
+  // A estátua gasta energia (dura uns 2,5 s). Depois de soltar, precisa recarregar tudo.
+  const querEstatua = !!teclas[" "] || botoes.estatua;
+  if (jog.energia >= 1) jog.estatuaTravada = false;
+  jog.parado = querEstatua && jog.energia > 0 && !jog.estatuaTravada;
+  if (jog.parado) {
+    jog.energia = Math.max(0, jog.energia - 0.4 * dt);
+  } else {
+    jog.energia = Math.min(1, jog.energia + 0.2 * dt);
+    if (jog.energia < 1) jog.estatuaTravada = true;
+  }
+  const quer = (dx !== 0 || dy !== 0) && !jog.parado;
+
+  // Correr gasta fôlego; quando acaba, precisa descansar um pouco
+  const correndo = quer && (teclas["shift"] || botoes.correr) && !jog.cansado && jog.estamina > 0;
+  if (correndo) {
+    jog.estamina -= 0.45 * dt;
+    if (jog.estamina <= 0) { jog.estamina = 0; jog.cansado = true; }
+  } else {
+    jog.estamina = Math.min(1, jog.estamina + 0.25 * dt);
+    if (jog.cansado && jog.estamina > 0.3) jog.cansado = false;
+  }
+
+  const vel = correndo ? 260 : 160;
+  jog.seMexeu = quer;                         // o modo estátua usa isso para pegar quem se mexe
+  if (quer) {
+    jog.x += dx * vel * dt;
+    jog.y += dy * vel * dt;
+    jog.ang = Math.atan2(dy, dx);
+    jog.dirX = dx; jog.dirY = dy;               // lembra para onde andou (a isca é jogada nessa direção)
+  }
+  jog.x = Math.max(14, Math.min(W - 14, jog.x));
+  jog.y = Math.max(14, Math.min(H - 14, jog.y));
+  // Modo Estátua: só a ponte permite atravessar o asfalto.
+  if (modo === "estatua" && Math.abs(jog.x - PONTE_X) > PONTE_LARGURA / 2 &&
+      jog.y > RUA_TOPO - 14 && jog.y < RUA_BASE + 14) {
+    jog.y = (jog.y < (RUA_TOPO + RUA_BASE) / 2) ? RUA_TOPO - 14 : RUA_BASE + 14;
+  }
+  jog.naPonte = modo === "estatua" && Math.abs(jog.x - PONTE_X) <= PONTE_LARGURA / 2 &&
+    jog.y >= RUA_TOPO && jog.y <= RUA_BASE;
+
+  // Está dentro de alguma caixa? Então está escondido.
+  jog.escondido = esconderijos.some(e =>
+    Math.abs(jog.x - e.x) < e.w / 2 && Math.abs(jog.y - e.y) < e.h / 2);
+}
+
+/* ==========================================================================
+   9) O ÔNIBUS
+   ========================================================================== */
+// Faz o ônibus virar devagar e andar em direção a um ponto. Devolve a distância que falta.
+function andarPara(o, tx, ty, vel, giro, dt) {
+  vel *= Math.min(1 + (fase - 1) * 0.1, 1.6);   // a cada fase o ônibus fica um pouco mais rápido
+  const a = Math.atan2(ty - o.y, tx - o.x);
+  let d = a - o.ang;
+  d = Math.atan2(Math.sin(d), Math.cos(d));          // deixa o ângulo entre -180° e 180°
+  const m = giro * dt;
+  o.ang += Math.max(-m, Math.min(m, d));
+  o.x += Math.cos(o.ang) * vel * dt;
+  o.y += Math.sin(o.ang) * vel * dt;
+  o.x = Math.max(50, Math.min(W - 50, o.x));
+  // O ônibus não sobe na calçada: sua carroceria inteira fica dentro do asfalto.
+  o.y = Math.max(RUA_TOPO + o.alt / 2, Math.min(RUA_BASE - o.alt / 2, o.y));
+  return Math.hypot(tx - o.x, ty - o.y);
+}
+
+/* ---- MODO FUGA: o ônibus passeia, vê você, persegue e atira ---- */
+function iaFuga(dt) {
+  const o = onibus;
+  o.tempoTiro -= dt;
+
+  const dist = Math.hypot(jog.x - o.x, jog.y - o.y);
+  // Se você está parado (estátua), ele só te vê bem de pertinho. Escondido, não vê.
+  const alcance = jog.parado ? 90 : 330;
+  const vendo = !jog.escondido && dist < alcance;
+
+  if (vendo) {
+    o.estado = "perseguindo";
+    o.memoria = 1.5;                                  // lembra de você por 1,5 segundo
+    o.alvo = alvoNaRua(jog.x, jog.y, o.alt / 2);
+  } else if (o.estado === "perseguindo") {
+    o.memoria -= dt;
+    if (o.memoria <= 0) o.estado = "investigando";    // foi até onde te viu pela última vez
+  }
+
+  // A isca chama a atenção dele (se ele não estiver te perseguindo)
+  if (isca && o.estado !== "perseguindo") {
+    o.estado = "investigando";
+    o.alvo = alvoNaRua(isca.x, isca.y, o.alt / 2);
+  }
+
+  if (o.pausa > 0) { o.pausa -= dt; return; }         // parado, pensando
+
+  if (o.estado === "perseguindo") {
+    const velocidade = Math.min(200, 110 + tempo * 1.5);   // vai ficando mais rápido
+    andarPara(o, o.alvo.x, o.alvo.y, velocidade, 2.4, dt);
+    if (vendo && dist < 300 && o.tempoTiro <= 0) {
+      atirar();
+      o.tempoTiro = (CONFIG.AMEACA === 1) ? 2.2 : 2.8;
+    }
+  } else {
+    const vel = (o.estado === "investigando") ? 110 : 70;
+    const d = andarPara(o, o.alvo.x, o.alvo.y, vel, 1.8, dt);
+    if (d < 30) {                                     // chegou: espera um pouco e escolhe outro lugar
+      o.estado = "passeando";
+      o.alvo = novoAlvo();
+      o.pausa = 0.8;
+    }
+  }
+}
+
+/* ---- MODO ESTÁTUA: de vez em quando o ônibus para e OLHA. Se você se mexer, é pego ---- */
+function iaEstatua(dt) {
+  const o = onibus;
+  o.fase -= dt;
+
+  if (o.estado === "andando") {
+    if (isca) o.alvo = alvoNaRua(isca.x, isca.y, o.alt / 2);
+    const d = andarPara(o, o.alvo.x, o.alvo.y, Math.min(130, 65 + tempo * 0.8), 1.8, dt);
+    if (d < 30) o.alvo = novoAlvo();
+    if (o.fase <= 0) {                                // hora de olhar: primeiro avisa!
+      o.estado = "aviso"; o.fase = 1.3; bip(300, 0.25);
+    }
+  } else if (o.estado === "aviso") {
+    if (o.fase <= 0) {                                // agora ele está olhando
+      o.estado = "olhando"; o.fase = 2 + Math.random() * 1.2; o.graca = 0.2;
+    }
+  } else {                                            // "olhando"
+    o.graca -= dt;                                    // uma folguinha de 0,2 s para reagir
+    if (o.graca <= 0 && jog.seMexeu && !jog.escondido) terminar("Você se mexeu!", false);
+    if (o.fase <= 0) { o.estado = "andando"; o.fase = 4 + Math.random() * 4; }
+  }
+}
+
+/* ---- A ARMA ---- */
+// Onde está a "pessoa" em cima do ônibus (usada na ameaça 2)
+function posPessoa() {
+  const o = onibus, lx = -8, ly = -6;
+  return {
+    x: o.x + lx * Math.cos(o.ang) - ly * Math.sin(o.ang),
+    y: o.y + lx * Math.sin(o.ang) + ly * Math.cos(o.ang)
+  };
+}
+
+function atirar() {
+  const o = onibus;
+  let ox, oy;
+  if (CONFIG.AMEACA === 1) {                          // o cano fica na frente do ônibus
+    ox = o.x + Math.cos(o.ang) * (o.larg / 2 + 14);
+    oy = o.y + Math.sin(o.ang) * (o.larg / 2 + 14);
+  } else {                                            // o tiro sai da pessoa
+    const p = posPessoa(); ox = p.x; oy = p.y;
+  }
+  const a = Math.atan2(jog.y - oy, jog.x - ox);
+  tiros.push({ x: ox, y: oy, vx: Math.cos(a) * 260, vy: Math.sin(a) * 260, vida: 2.2 });
+  bip(700, 0.08);
+}
+
+function atualizarTiros(dt) {
+  for (let i = tiros.length - 1; i >= 0; i--) {
+    const t = tiros[i];
+    t.x += t.vx * dt; t.y += t.vy * dt; t.vida -= dt;
+    // As caixas bloqueiam os tiros
+    const naCaixa = esconderijos.some(e => Math.abs(t.x - e.x) < e.w / 2 && Math.abs(t.y - e.y) < e.h / 2);
+    if (t.vida <= 0 || naCaixa || t.x < 0 || t.x > W || t.y < 0 || t.y > H) { tiros.splice(i, 1); continue; }
+    if (Math.hypot(t.x - jog.x, t.y - jog.y) < 16 && !jog.parado) { tiros.splice(i, 1); levarDano("Acertou você!"); }   // estátua: o tiro passa direto
+  }
+}
+
+// O ônibus encostou no jogador? (caixa do ônibus girada)
+function onibusPegou() {
+  const o = onibus;
+  const dx = jog.x - o.x, dy = jog.y - o.y;
+  const c = Math.cos(-o.ang), s = Math.sin(-o.ang);
+  const lx = dx * c - dy * s, ly = dx * s + dy * c;
+  return Math.abs(lx) < o.larg / 2 + 8 && Math.abs(ly) < o.alt / 2 + 8;
+}
+
+/* ==========================================================================
+   10) ISCA, ITENS, SAÍDA E FIM DE JOGO
+   ========================================================================== */
+function soltarIsca() {
+  if (estado !== "jogando" || modo === "estatua" || isca || iscaEspera > 0) return;
+  // A isca é jogada 230 pixels à FRENTE de você (na última direção em que andou)
+  const ix = Math.max(30, Math.min(W - 30, jog.x + (jog.dirX || 1) * 230));
+  const iy = Math.max(30, Math.min(H - 30, jog.y + (jog.dirY || 0) * 230));
+  isca = { x: ix, y: iy, vida: 5 };   // dura 5 segundos
+  iscaEspera = 7;                           // só pode soltar outra depois de 7 segundos
+  bip(500, 0.1);
+}
+
+function atualizarIsca(dt) {
+  if (iscaEspera > 0) iscaEspera -= dt;
+  if (!isca) return;
+  isca.vida -= dt;
+  const pertoDoOnibus = Math.hypot(isca.x - onibus.x, isca.y - onibus.y) < 45;
+  if (isca.vida <= 0 || pertoDoOnibus) isca = null;   // acabou o tempo ou o ônibus amassou
+}
+
+// A saída está aberta? (no objetivo 3 ela só abre depois de pegar todos os itens)
+function saidaAberta() { return CONFIG.OBJETIVO !== 3 || itensPegos >= CONFIG.ITENS_META; }
+
+function pegarItens() {
+  for (let i = itens.length - 1; i >= 0; i--) {
+    if (Math.hypot(itens[i].x - jog.x, itens[i].y - jog.y) < 22) {
+      itens.splice(i, 1);
+      itensPegos++;
+      bip(900, 0.06);
+      if (itensPegos >= CONFIG.ITENS_META && CONFIG.OBJETIVO === 1) terminar("Você pegou tudo!", true);
+    }
+  }
+  if (saida && saidaAberta() && Math.abs(jog.x - saida.x) < saida.w / 2 && Math.abs(jog.y - saida.y) < saida.h / 2) {
+    terminar("Você achou a saída!", true);
+  }
+}
+
+// Levou uma batida ou um tiro: perde vida e fica protegido por 1,5 segundo
+function levarDano(motivo) {
+  if (invenc > 0 || estado !== "jogando") return;
+  vida -= CONFIG.DANO;
+  invenc = 1.5;
+  bip(180, 0.2);
+  if (vida <= 0) { vida = 0; terminar(motivo, false); return; }
+  // Empurra o jogador para longe do ônibus
+  const a = Math.atan2(jog.y - onibus.y, jog.x - onibus.x);
+  jog.x = Math.max(14, Math.min(W - 14, jog.x + Math.cos(a) * 70));
+  jog.y = Math.max(14, Math.min(H - 14, jog.y + Math.sin(a) * 70));
+}
+
+// Pega moedas. A bebida para recuperar vida é comprada no menu de pausa.
+function moedasELoja(dt) {
+  for (let i = moedas.length - 1; i >= 0; i--) {
+    if (Math.hypot(moedas[i].x - jog.x, moedas[i].y - jog.y) < 20) {
+      moedas.splice(i, 1); moedasPegas++; bip(800, 0.06);
+    }
+  }
+  efeitoCura = Math.max(0, efeitoCura - dt);
+}
+
+function comprarBebida() {
+  // A compra só acontece na pausa, para não virar uma cura no meio da perseguição.
+  if (estado !== "pausa" || moedasPegas < CONFIG.MOEDAS_LOJA || vida >= 100) return;
+  moedasPegas -= CONFIG.MOEDAS_LOJA;
+  vida = Math.min(100, vida + CONFIG.DANO);
+  efeitoCura = 1;
+  bip(1000, 0.12);
+}
+
+// Termina a partida (ganhou = true) ou (ganhou = false, é o "game over")
+function terminar(motivo, ganhou) {
+  if (estado !== "jogando") return;
+  estado = "fim";
+  venceu = ganhou;
+  motivoFim = motivo;
+  if (ganhou) { fase++; guardarNumero("onibus_fase", fase); }   // venceu: sobe de fase e salva
+  novoRecorde = false;
+  const r = recordes[modo];
+  if (ganhou) {
+    if (r.vit === 0 || tempo < r.vit) {          // na vitória, vale o MENOR tempo
+      r.vit = tempo; novoRecorde = true; guardarNumero("onibus_vit_" + modo, r.vit);
+    }
+  } else if (tempo > r.sobrev) {                 // na derrota, vale o MAIOR tempo sobrevivido
+    r.sobrev = tempo; novoRecorde = true; guardarNumero("onibus_rec_" + modo, r.sobrev);
+  }
+  bip(ganhou ? 880 : 150, 0.4);
+}
+
+/* ==========================================================================
+   11) ATUALIZAR (roda a cada quadro enquanto está jogando)
+   ========================================================================== */
+function atualizar(dt) {
+  tempo += dt;
+  moverJogador(dt);
+  if (modo === "fuga") iaFuga(dt); else iaEstatua(dt);
+  atualizarTiros(dt);
+  atualizarIsca(dt);
+  pegarItens();
+  moedasELoja(dt);
+  invenc = Math.max(0, invenc - dt);
+  if (estado === "jogando" && onibusPegou() && !jog.escondido && !jog.parado && !jog.naPonte) levarDano("O ônibus te pegou!");   // na caixa, na ponte ou virado estátua, o ônibus não te acerta
+}
+
+/* ==========================================================================
+   12) DESENHAR
+   ========================================================================== */
+function desenhar() {
+  // Ajusta o tamanho da tela e centraliza o mundo
+  const dpr = window.devicePixelRatio || 1;
+  const cw = window.innerWidth, ch = window.innerHeight;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+  }
+  escala = Math.min(cw / W, ch / H);
+  offX = (cw - W * escala) / 2;
+  offY = (ch - H * escala) / 2;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#1b1b1b";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(dpr * escala, 0, 0, dpr * escala, dpr * offX, dpr * offY);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+
+  botoesTela = [];   // os botões são refeitos a cada quadro
+  desenharChao();
+  if (estado === "titulo") {
+    desenharTitulo();
+  } else if (estado === "tutorial") {
+    desenharTutorial();
+  } else {
+    desenharJogo();
+    if (estado === "pausa") desenharPausa();
+    if (estado === "fim") desenharFim();
+  }
+  ctx.restore();
+}
+
+function desenharChao() {
+  if (imagens.chao) { ctx.drawImage(imagens.chao, 0, 0, W, H); return; }
+  // Calçada em cima e embaixo, rua de asfalto no meio
+  ctx.fillStyle = "#b9b6ad";                 // calçada
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#2b2d33";                 // asfalto da rua
+  ctx.fillRect(0, 80, W, 380);
+  ctx.fillStyle = "#8d8a80";                 // meio-fio (a borda da calçada)
+  ctx.fillRect(0, 76, W, 4);
+  ctx.fillRect(0, 460, W, 4);
+  // Faixa tracejada no meio da rua
+  ctx.strokeStyle = "#8a8f9c"; ctx.lineWidth = 4; ctx.setLineDash([24, 18]);
+  ctx.beginPath(); ctx.moveTo(0, 270 + ruido(900) * 1.5); ctx.lineTo(W, 270 + ruido(901) * 1.5); ctx.stroke();
+  ctx.setLineDash([]);
+  // Pontinhos que "fervem" no stop motion (mais claros na rua, mais escuros na calçada)
+  for (let i = 0; i < 90; i++) {
+    const x = ((i * 137) % W) + ruido(i) * 1.5;
+    const y = ((i * 61) % H) + ruido(i + 500) * 1.5;
+    ctx.fillStyle = (y > 80 && y < 460) ? "#3d4048" : "#a6a399";
+    ctx.fillRect(x, y, 3, 3);
+  }
+}
+
+// Desenhada depois do ônibus para deixar claro que ela fica por cima da rua.
+function desenharPonteElevada() {
+  if (modo !== "estatua") return;
+  ctx.fillStyle = "#725234"; ctx.fillRect(PONTE_X - PONTE_LARGURA / 2, RUA_TOPO, PONTE_LARGURA, RUA_BASE - RUA_TOPO);
+  ctx.fillStyle = "#b98a56";
+  for (let y = RUA_TOPO + 8; y < RUA_BASE; y += 20) ctx.fillRect(PONTE_X - PONTE_LARGURA / 2 + 6, y, PONTE_LARGURA - 12, 10);
+  ctx.strokeStyle = "#e3bd7d"; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(PONTE_X - PONTE_LARGURA / 2 + 4, RUA_TOPO); ctx.lineTo(PONTE_X - PONTE_LARGURA / 2 + 4, RUA_BASE); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(PONTE_X + PONTE_LARGURA / 2 - 4, RUA_TOPO); ctx.lineTo(PONTE_X + PONTE_LARGURA / 2 - 4, RUA_BASE); ctx.stroke();
+}
+
+/* ---- Corpo do ônibus (usado no jogo e no logo) ---- */
+function desenharCorpoOnibus(larg, alt) {
+  ctx.fillStyle = "#f2b705"; ctx.strokeStyle = "#8a6500"; ctx.lineWidth = 3;
+  rr(-larg / 2, -alt / 2, larg, alt, 6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "#f7c733";                                    // teto
+  ctx.fillRect(-larg / 2 + 6, -alt / 2 + 5, larg - 12, alt - 10);
+  ctx.fillStyle = "#ffe98a";                                    // faróis (a frente é a direita)
+  ctx.fillRect(larg / 2 - 4, -alt / 2 + 3, 5, 7);
+  ctx.fillRect(larg / 2 - 4, alt / 2 - 10, 5, 7);
+  ctx.fillStyle = "#1b1b1b"; ctx.font = "bold " + Math.round(alt / 3) + "px sans-serif";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("C BUS", -4, 0);
+}
+
+function desenharOnibus() {
+  const o = onibus;
+  comTremor(o.x, o.y, o.ang, 1, () => {
+    if (!desenharImagem("onibus", o.larg, o.alt)) {
+      desenharCorpoOnibus(o.larg, o.alt);
+      if (CONFIG.AMEACA === 1) {
+        // Ameaça 1: o ônibus tem olhos que seguem você, e uma arma na frente
+        const olhar = Math.atan2(jog.y - o.y, jog.x - o.x) - o.ang;
+        for (const lado of [-7, 7]) {
+          ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(o.larg / 2 - 16, lado, 5, 0, 7); ctx.fill();
+          ctx.fillStyle = "#000"; ctx.beginPath();
+          ctx.arc(o.larg / 2 - 16 + Math.cos(olhar) * 2, lado + Math.sin(olhar) * 2, 2.2, 0, 7); ctx.fill();
+        }
+        ctx.fillStyle = "#222"; ctx.fillRect(o.larg / 2 - 2, -3, 16, 6);
+        ctx.fillStyle = "#e33"; ctx.fillRect(o.larg / 2 + 12, -4, 4, 8);
+      }
+    } else if (CONFIG.AMEACA === 1) {
+      ctx.fillStyle = "#222"; ctx.fillRect(o.larg / 2 - 2, -3, 16, 6);   // arma por cima da sua foto
+    }
+  });
+
+  if (CONFIG.AMEACA === 2) {
+    // Ameaça 2: uma pessoa em cima do ônibus que aponta a arma para você
+    const p = posPessoa();
+    const mira = Math.atan2(jog.y - p.y, jog.x - p.x);
+    comTremor(p.x, p.y, mira, 2, () => {
+      if (!desenharImagem("pessoa", 20, 20)) {
+        ctx.fillStyle = "#222"; ctx.fillRect(2, -2, 14, 4);                 // arma
+        ctx.fillStyle = "#c0392b"; ctx.beginPath(); ctx.ellipse(0, 0, 6, 9, 0, 0, 7); ctx.fill();  // ombros
+        ctx.fillStyle = "#ffcf9f"; ctx.beginPath(); ctx.arc(1, 0, 5.5, 0, 7); ctx.fill();          // cabeça
+      }
+    });
+  }
+}
+
+function desenharJogador() {
+  comTremor(jog.x, jog.y, jog.ang, 3, () => {
+    // Escondido fica meio transparente; depois de levar dano, pisca
+    ctx.globalAlpha = jog.escondido ? 0.5 : ((invenc > 0 && frameStop % 2) ? 0.3 : 1);
+    if (!desenharImagem("jogador", 34, 34)) {
+      ctx.fillStyle = jog.parado ? "#9aa5b1" : "#2e9e57";         // cinza = estátua
+      ctx.beginPath(); ctx.ellipse(0, 0, 8, 14, 0, 0, 7); ctx.fill(); // ombros
+      ctx.fillStyle = "#ffcf9f";
+      ctx.beginPath(); ctx.arc(2, 0, 7, 0, 7); ctx.fill();            // cabeça
+    }
+    if (jog.parado) {                                             // anel de estátua
+      ctx.strokeStyle = "#ffffffaa"; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.arc(0, 0, 21, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+function desenharJogo() {
+  // Saída
+  if (saida) comTremor(saida.x, saida.y, 0, 7, () => {
+    ctx.globalAlpha = saidaAberta() ? 1 : 0.5;   // apagada enquanto fechada
+    if (!desenharImagem("saida", saida.w, saida.h)) {
+      ctx.fillStyle = "#3fae5a"; ctx.strokeStyle = "#1d6b34"; ctx.lineWidth = 3;
+      rr(-saida.w / 2, -saida.h / 2, saida.w, saida.h, 6); ctx.fill(); ctx.stroke();
+      texto("SAÍDA", 0, 0, 13, "#fff");
+    }
+  });
+
+  // Itens
+  itens.forEach((it, i) => comTremor(it.x, it.y, 0, 20 + i, () => {
+    if (!desenharImagem("item", 24, 24)) {
+      ctx.fillStyle = "#ffcc2e"; ctx.strokeStyle = "#a36b00"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(0, 0, 9, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#fff8c9"; ctx.beginPath(); ctx.arc(-3, -3, 3, 0, 7); ctx.fill();
+    }
+  }));
+
+  // Isca
+  if (isca) comTremor(isca.x, isca.y, 0, 8, () => {
+    if (!desenharImagem("isca", 24, 24)) {
+      ctx.fillStyle = "#ff6fa5"; ctx.strokeStyle = "#a02b5f"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(0, 0, 9, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = (frameStop % 2) ? "#ffffffcc" : "#ffffff44";   // anel que pisca
+      ctx.beginPath(); ctx.arc(0, 0, 16, 0, 7); ctx.stroke();
+    }
+    // Onda de barulho que cresce a cada segundo
+    ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(0, 0, 8 + ((5 - isca.vida) % 1) * 70, 0, 7); ctx.stroke();
+  });
+
+  desenharMoedasELoja();
+  if (modo !== "estatua") desenharJogador();
+
+  // Esconderijos (desenhados POR CIMA do jogador, para ele sumir lá dentro)
+  esconderijos.forEach((e, i) => comTremor(e.x, e.y, 0, 10 + i, () => {
+    ctx.globalAlpha = 0.93;
+    if (!desenharImagem("esconderijo", e.w, e.h)) {
+      ctx.fillStyle = "#b98a56"; ctx.strokeStyle = "#6b4a26"; ctx.lineWidth = 3;
+      rr(-e.w / 2, -e.h / 2, e.w, e.h, 4); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-e.w / 2, 0); ctx.lineTo(e.w / 2, 0); ctx.stroke();   // emenda da caixa
+      ctx.fillStyle = "#d9b27a"; ctx.fillRect(-9, -e.h / 2 + 3, 18, e.h - 6);           // fita
+    }
+    ctx.globalAlpha = 1;
+  }));
+
+  desenharOnibus();
+  if (modo === "estatua") {
+    desenharPonteElevada();
+    desenharJogador();
+  }
+
+  // Tiros (bolinhas laranja)
+  for (const t of tiros) {
+    ctx.fillStyle = "#ff7a00"; ctx.beginPath(); ctx.arc(t.x, t.y, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(t.x, t.y, 2, 0, 7); ctx.fill();
+  }
+
+  // Escuridão: escurece tudo, deixando só um círculo de visão em volta do jogador
+  if (CONFIG.ESCURIDAO) {
+    const g = ctx.createRadialGradient(jog.x, jog.y, 60, jog.x, jog.y, 300);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, "rgba(0,0,0,.7)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Avisos em cima do ônibus
+  if (modo === "fuga" && onibus.estado === "perseguindo") texto("!", onibus.x, onibus.y - 34, 32, "#ff4040");
+  if (modo === "estatua" && onibus.estado === "aviso")   texto("!", onibus.x, onibus.y - 34, 32, "#ffb020");
+  if (modo === "estatua" && onibus.estado === "olhando") {
+    texto("👁", onibus.x, onibus.y - 36, 30, "#fff");
+    ctx.strokeStyle = "#ff3030"; ctx.lineWidth = 8;                // borda vermelha na tela
+    ctx.strokeRect(4, 4, W - 8, H - 8);
+  }
+
+  desenharHUD();
+
+  // Direcional do dedo (só no celular, enquanto o dedo está na tela)
+  if (ponteiro.ativo && ponteiro.tipo !== "mouse" && estado === "jogando") {
+    let dx = ponteiro.x - ponteiro.ox, dy = ponteiro.y - ponteiro.oy;
+    const m = Math.hypot(dx, dy);
+    if (m > 40) { dx = dx / m * 40; dy = dy / m * 40; }
+    ctx.strokeStyle = "#ffffff88"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(ponteiro.ox, ponteiro.oy, 40, 0, 7); ctx.stroke();
+    ctx.fillStyle = "#ffffff88";
+    ctx.beginPath(); ctx.arc(ponteiro.ox + dx, ponteiro.oy + dy, 16, 0, 7); ctx.fill();
+  }
+}
+
+// Moedas (a bebida é comprada pelo menu de pausa)
+function desenharMoedasELoja() {
+  moedas.forEach((m, i) => comTremor(m.x, m.y, 0, 40 + i, () => {
+    ctx.fillStyle = "#ffa94d"; ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 7, 0, 7); ctx.fill(); ctx.stroke();
+  }));
+  if (efeitoCura > 0) texto("+vida!", jog.x, jog.y - 32 - (1 - efeitoCura) * 20, 16, "#4ade80");
+}
+
+function desenharHUD() {
+  texto("⏱ " + tempo.toFixed(1) + " s", 16, 24, 22, "#fff", "left");
+  if (modo === "estatua") {
+    texto("Recorde: " + recordes.estatua.sobrev.toFixed(1) + " s", 16, 52, 16, "#fff", "left");
+    // Barra de fôlego (para correr)
+    ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(16, 70, 110, 10);
+    ctx.fillStyle = jog.cansado ? "#e05050" : "#4fd16a"; ctx.fillRect(16, 70, 110 * jog.estamina, 10);
+    // Barra da estátua
+    ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(16, 90, 110, 10);
+    ctx.fillStyle = jog.estatuaTravada ? "#e05050" : "#b8bcc7"; ctx.fillRect(16, 90, 110 * jog.energia, 10);
+    texto(jog.estatuaTravada ? "🗿 recarregando..." : "🗿 estátua pronta", 134, 95, 14, "#fff", "left");
+    if (onibus.estado === "aviso")   texto("⚠ ATENÇÃO!", W / 2, 30, 28, "#ffb020");
+    if (onibus.estado === "olhando") texto("FIQUE PARADO!", W / 2, 30, 30, "#ff5050");
+    return;
+  }
+  if (CONFIG.OBJETIVO !== 2) texto("⭐ " + itensPegos + "/" + CONFIG.ITENS_META +
+      (CONFIG.OBJETIVO === 3 && saidaAberta() ? "   🚪 Corra para a SAÍDA!" : ""), 16, 52, 20, "#ffe27a", "left");
+  else texto("🚪 Chegue na SAÍDA!", 16, 52, 20, "#9dffb0", "left");
+  texto("Recorde: " + recordes[modo].sobrev.toFixed(1) + " s", 16, 78, 16, "#fff", "left");
+  // Barra de fôlego (para correr)
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(16, 96, 110, 10);
+  ctx.fillStyle = jog.cansado ? "#e05050" : "#4fd16a"; ctx.fillRect(16, 96, 110 * jog.estamina, 10);
+  // Barra de vida, moedas e fase
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(16, 112, 110, 10);
+  ctx.fillStyle = "#ef4444"; ctx.fillRect(16, 112, 110 * Math.max(0, vida) / 100, 10);
+  texto("❤ vida", 134, 117, 14, "#fff", "left");
+  // Barra da estátua
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.fillRect(16, 128, 110, 10);
+  ctx.fillStyle = jog.estatuaTravada ? "#e05050" : "#b8bcc7"; ctx.fillRect(16, 128, 110 * jog.energia, 10);
+  texto(jog.estatuaTravada ? "🗿 recarregando..." : "🗿 estátua pronta", 134, 133, 14, "#fff", "left");
+  texto("🪙 " + moedasPegas, 16, 156, 18, "#ffa94d", "left");
+  texto("Fase " + fase, 16, 182, 18, "#fff", "left");
+
+}
+
+/* ---- Botões desenhados dentro do jogo ---- */
+function botao(x, y, w, h, linhas, acao, cor) {
+  botoesTela.push({ x, y, w, h, acao });
+  comTremor(x + w / 2, y + h / 2, 0, 100 + botoesTela.length, () => {
+    ctx.fillStyle = cor || "#2f6fd6"; ctx.strokeStyle = "#3a2a14"; ctx.lineWidth = 4;
+    rr(-w / 2, -h / 2, w, h, 16); ctx.fill(); ctx.stroke();
+    const n = linhas.length;
+    linhas.forEach((l, i) => {
+      const tam = (i === 0) ? 26 : 15;
+      texto(l, 0, (i - (n - 1) / 2) * 30, tam, "#fff");
+    });
+  });
+}
+
+/* ---- Tela de título ---- */
+function desenharTitulo() {
+  if (imagens.logo) {
+    ctx.save(); ctx.translate(W / 2, 100); desenharImagem("logo", 420, 160); ctx.restore();
+  } else {
+    comTremor(W / 2, 80, 0, 5, () => texto("ÔNIBUS ASSASSINO", 0, 0, 58, "#ffd84a"));
+    texto("Motion Games", W / 2, 135, 20, "#fff");     // nome provisório do estúdio
+    comTremor(W / 2, 190, 0, 6, () => desenharCorpoOnibus(120, 46));
+  }
+
+  texto("Fase " + fase, 16, 24, 20, "#ffe27a", "left");
+  const r1 = recordes.fuga, r2 = recordes.estatua;
+  botao(W / 2 - 320, 250, 300, 130,
+    ["🏃 MODO FUGA", "Fuja e se esconda", "Recorde: " + r1.sobrev.toFixed(1) + " s"],
+    () => iniciarJogo("fuga"), "#2f6fd6");
+  botao(W / 2 + 20, 250, 300, 130,
+    ["🗿 MODO ESTÁTUA", "Fique parado quando ele olhar", "Recorde: " + r2.sobrev.toFixed(1) + " s"],
+    () => iniciarJogo("estatua"), "#8a4fc9");
+
+  // Botão que abre o tutorial (fica dentro do jogo, então a tela do jogo não encolhe)
+  botao(W / 2 - 110, 395, 220, 50, ["❓ COMO JOGAR"], () => { estado = "tutorial"; }, "#d98a1f");
+
+  if (!celularAtivo) {
+    texto("Setas/WASD andar  •  Shift correr  •  Espaço estátua  •  E isca  •  Esc pausa  •  F tela cheia",
+          W / 2, 470, 16, "#fff");
+  }
+  texto("Toque ou clique para escolher", W / 2, 505, 18, "#fff");
+  texto("Versão " + CONFIG.VERSAO, W - 16, H - 16, 14, "#fff", "right");
+}
+
+/* ---- Tela do tutorial (COMO JOGAR) ---- */
+function desenharTutorial() {
+  // Painel escuro por cima do chão
+  ctx.fillStyle = "rgba(0,0,0,.65)";
+  rr(30, 20, W - 60, H - 40, 20); ctx.fill();
+
+  texto("❓ COMO JOGAR", W / 2, 60, 44, "#ffd84a");
+
+  // O objetivo muda conforme o que está na CONFIG
+  if (CONFIG.OBJETIVO === 3) texto("🎯 Pegue as " + CONFIG.ITENS_META + " estrelas e corra para a SAÍDA!", W / 2, 125, 22, "#ffe27a");
+  else if (CONFIG.OBJETIVO === 1) texto("🎯 Pegue as " + CONFIG.ITENS_META + " estrelas sem o ônibus te pegar!", W / 2, 125, 22, "#ffe27a");
+  else                       texto("🚪 Chegue na SAÍDA sem o ônibus te pegar!", W / 2, 125, 22, "#9dffb0");
+
+  texto("🏃 MODO FUGA: o ônibus te vê, persegue e atira. Esconda-se!", W / 2, 175, 20, "#fff");
+  texto("🗿 MODO ESTÁTUA: use as calçadas e a ponte; pare quando ele OLHAR!", W / 2, 215, 20, "#fff");
+  texto("📦 As caixas escondem você. ❤ Você aguenta 3 batidas.", W / 2, 255, 20, "#fff");
+  texto("🎈 Isca atrai o ônibus. 🪙 3 moedas = bebida no menu de PAUSA (cura).", W / 2, 295, 20, "#fff");
+
+  texto("💻 Setas/WASD andar • Shift correr • Espaço estátua • E isca • Esc pausa • N som • F tela cheia",
+        W / 2, 345, 16, "#cfe8ff");
+  texto("📱 Arraste o dedo para andar • botões ESTÁTUA, CORRER e ISCA", W / 2, 380, 16, "#cfe8ff");
+
+  botao(W / 2 - 110, 430, 220, 60, ["VOLTAR"], irParaMenu, "#3fae5a");
+}
+
+function desenharPausa() {
+  ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(0, 0, W, H);
+  texto("⏸ PAUSA", W / 2, 150, 56, "#fff");
+  if (modo === "estatua") {
+    botao(W / 2 - 150, 210, 300, 55, ["CONTINUAR"], alternarPausa, "#3fae5a");
+    botao(W / 2 - 150, 280, 300, 55, ["MENU"], irParaMenu, "#8a4fc9");
+    botao(W / 2 - 150, 350, 300, 55, [mudo ? "🔇 SOM: desligado" : "🔊 SOM: ligado"], alternarSom, "#d98a1f");
+    botao(W / 2 - 150, 420, 300, 55, ["⛶ TELA CHEIA"], alternarTelaCheia, "#2f6fd6");
+    return;
+  }
+  texto("🪙 " + moedasPegas + " moedas", W / 2, 190, 18, "#ffa94d");
+  botao(W / 2 - 150, 210, 300, 45, ["CONTINUAR"], alternarPausa, "#3fae5a");
+  const textoBebida = vida >= 100 ? "❤ VIDA CHEIA" : "🥤 BEBIDA: " + CONFIG.MOEDAS_LOJA + " MOEDAS";
+  const corBebida = (vida < 100 && moedasPegas >= CONFIG.MOEDAS_LOJA) ? "#d98a1f" : "#6b7280";
+  botao(W / 2 - 150, 265, 300, 45, [textoBebida], comprarBebida, corBebida);
+  botao(W / 2 - 150, 320, 300, 45, ["MENU"], irParaMenu, "#8a4fc9");
+  botao(W / 2 - 150, 375, 300, 45, [mudo ? "🔇 SOM: desligado" : "🔊 SOM: ligado"], alternarSom, "#d98a1f");
+  botao(W / 2 - 150, 430, 300, 45, ["⛶ TELA CHEIA"], alternarTelaCheia, "#2f6fd6");
+}
+
+function desenharFim() {
+  ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(0, 0, W, H);
+  texto(venceu ? "🎉 VOCÊ ESCAPOU!" : "😵 GAME OVER", W / 2, 130, 56, venceu ? "#9dffb0" : "#ff8a8a");
+  texto(motivoFim, W / 2, 200, 28, "#fff");
+  texto("Tempo: " + tempo.toFixed(1) + " s", W / 2, 245, 26, "#ffe27a");
+  if (novoRecorde) texto("⭐ NOVO RECORDE! ⭐", W / 2, 285, 26, "#ffd84a");
+  if (venceu) texto("Próxima: fase " + fase, W / 2, 312, 20, "#9dffb0");
+  botao(W / 2 - 150, 330, 300, 70, ["JOGAR DE NOVO"], recomecar, "#3fae5a");
+  botao(W / 2 - 150, 415, 300, 70, ["MENU"], irParaMenu, "#8a4fc9");
+}
+
+/* ==========================================================================
+   13) O LOOP DO JOGO: roda sem parar, uns 60 vezes por segundo
+   ========================================================================== */
+let ultimoTempo = 0;
+function quadro(agora) {
+  const dt = Math.min(0.05, (agora - ultimoTempo) / 1000);   // tempo desde o último quadro
+  ultimoTempo = agora;
+
+  // Passa para o próximo "quadro de stop motion" de vez em quando
+  acumStop += dt;
+  if (acumStop >= 1 / CONFIG.STOP_MOTION_FPS) { acumStop -= 1 / CONFIG.STOP_MOTION_FPS; frameStop++; }
+
+  if (estado === "jogando") atualizar(dt);
+  atualizarMotor();
+  desenhar();
+  requestAnimationFrame(quadro);
+}
+requestAnimationFrame(quadro);
+</script>
+</body>
+</html>
